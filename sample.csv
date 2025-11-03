@@ -1,2 +1,4 @@
-Order Date,Customer Name,Order Total,Vendor Price,Approved Price,Delivery Date,Notes
-2025-11-02,Online - BN#1234,92.5,87.5,87.5,11/3/2025,Confirmed by BN; no change
+order_no,order_dt,source,customer,vendor,total,vendor_price,approved_price,approval_status,approval_notes,delivery_dt,delivery_type,status
+ORD-202511-0004,11/3/2025,BloomNet,Jessica Hall,BloomNet, $75.00 ,70,70,Approved,Confirmed,11/3/2025,In-Store Pickup,Vendor Paid
+ORD-202511-0005,11/3/2025,Teleflora,David Lopez,Teleflora, $120.00 ,110,115,Pending,Awaiting vendor approval,11/4/2025,Vendor Delivery,Vendor Pending
+ORD-202511-0006,11/2/2025,In-Store,Susan Miller,, $45.00 ,0,0,Approved,Walk-in purchase,11/2/2025,In-Store Pickup,Open
