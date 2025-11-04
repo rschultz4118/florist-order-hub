@@ -1,5 +1,5 @@
 # =======================================================================
-# 360 Flower Shop – Order Manager (Stable Full App)
+# 360 Flower Shop – Order Manager (Top-of-file: imports + DB + seeding)
 # =======================================================================
 
 import os
@@ -12,9 +12,7 @@ from typing import Optional
 import pandas as pd
 import streamlit as st
 
-# -----------------------------------------------------------------------
-#  DATABASE SETUP (works locally & on Streamlit Cloud)
-# -----------------------------------------------------------------------
+# ----- Cloud-safe data path ---------------------------------------------------
 IS_CLOUD = os.environ.get("STREAMLIT_RUNTIME", "") != ""
 DATA_DIR = Path("/mount/data") if IS_CLOUD else Path(__file__).parent
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -26,6 +24,7 @@ if not DB_PATH.exists() and OLD_DB_PATH.exists():
         shutil.copy2(OLD_DB_PATH, DB_PATH)
     except Exception:
         pass
+
 
 
 def get_conn():
@@ -88,13 +87,6 @@ def ensure_schema(conn):
         if col not in cur_cols:
             conn.execute(f"ALTER TABLE orders ADD COLUMN {col} {coltype};")
     conn.commit()
-
-
-
-conn = get_conn()
-ensure_schema(conn)       # <-- add this line
-seed_demo_data(conn)
-
 
 # -----------------------------------------------------------------------
 #  HELPERS
@@ -193,6 +185,11 @@ def import_orders_from_df(conn, df: pd.DataFrame, vendor_override: Optional[str]
         except Exception:
             skipped += 1
     return imported, skipped
+    
+
+conn = get_conn()
+ensure_schema(conn)       # <-- add this line
+seed_demo_data(conn)
 
 # -----------------------------------------------------------------------
 #  UI CONFIG / STYLING
