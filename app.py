@@ -1,5 +1,5 @@
 # =======================================================================
-# 360 Flower Shop – Order Manager (Top-of-file: imports + DB + seeding)
+# 360 Flower Shop – Order Manager (Clean, Consolidated)
 # =======================================================================
 
 import os
@@ -12,7 +12,9 @@ from typing import Optional
 import pandas as pd
 import streamlit as st
 
-# ----- Cloud-safe data path ---------------------------------------------------
+# -----------------------------------------------------------------------
+# Cloud-safe data path
+# -----------------------------------------------------------------------
 IS_CLOUD = os.environ.get("STREAMLIT_RUNTIME", "") != ""
 DATA_DIR = Path("/mount/data") if IS_CLOUD else Path(__file__).parent
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -25,10 +27,11 @@ if not DB_PATH.exists() and OLD_DB_PATH.exists():
     except Exception:
         pass
 
-
-
+# -----------------------------------------------------------------------
+# DB bootstrap: connection, schema, seeding
+# -----------------------------------------------------------------------
 def get_conn():
-    """Open a connection to the SQLite database and ensure the orders table exists."""
+    """Open SQLite DB and ensure base table exists (idempotent)."""
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS orders (
@@ -57,8 +60,7 @@ def get_conn():
 
 
 def ensure_schema(conn):
-    """Create table if needed and add any missing columns (safe to run every start)."""
-    # Columns we expect (SQLite ignores DEFAULT if omitted on ALTER)
+    """Add any missing columns to orders (safe to run each start)."""
     required = {
         "order_no": "TEXT",
         "order_dt": "TEXT",
@@ -78,18 +80,110 @@ def ensure_schema(conn):
         "status": "TEXT",
         "created_at": "TEXT",
     }
-
-    # Current columns
     cur_cols = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
-
-    # Add any missing columns
     for col, coltype in required.items():
         if col not in cur_cols:
             conn.execute(f"ALTER TABLE orders ADD COLUMN {col} {coltype};")
     conn.commit()
 
+
+def seed_demo_data(conn):
+    """Seed a few demo rows if table is empty."""
+    try:
+        n = conn.execute("SELECT COUNT(1) FROM orders").fetchone()[0]
+    except sqlite3.OperationalError:
+        n = 0
+    if n > 0:
+        return
+
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    rows = [
+        {
+            "order_no": "ORD-202511-0001",
+            "order_dt": "2025-11-02",
+            "source": "Phone",
+            "customer": "Sarah James",
+            "vendor": None,
+            "total": 85.00,
+            "vendor_price": 0.0,
+            "approved_price": 0.0,
+            "approval_status": "Approved",
+            "approval_notes": "",
+            "approved_by_shop_ts": now,
+            "approved_by_vendor_ts": None,
+            "commission_pct": 0.0,
+            "delivery_dt": "2025-11-02",
+            "delivery_type": "In-Store Pickup",
+            "status": "Open",
+            "created_at": now,
+        },
+        {
+            "order_no": "ORD-202511-0002",
+            "order_dt": "2025-11-02",
+            "source": "BloomNet",
+            "customer": "BN#1234",
+            "vendor": "BloomNet",
+            "total": 92.50,
+            "vendor_price": 87.50,
+            "approved_price": 87.50,
+            "approval_status": "Approved",
+            "approval_notes": "Vendor confirmed",
+            "approved_by_shop_ts": now,
+            "approved_by_vendor_ts": now,
+            "commission_pct": 0.0,
+            "delivery_dt": "2025-11-03",
+            "delivery_type": "Vendor Delivery",
+            "status": "Vendor Pending",
+            "created_at": now,
+        },
+        {
+            "order_no": "ORD-202511-0003",
+            "order_dt": "2025-11-01",
+            "source": "Teleflora",
+            "customer": "TF#8890",
+            "vendor": "Teleflora",
+            "total": 110.00,
+            "vendor_price": 100.00,
+            "approved_price": 98.00,
+            "approval_status": "Pending",
+            "approval_notes": "Negotiation in progress",
+            "approved_by_shop_ts": None,
+            "approved_by_vendor_ts": now,
+            "commission_pct": 0.0,
+            "delivery_dt": "2025-11-02",
+            "delivery_type": "Vendor Delivery",
+            "status": "Vendor Pending",
+            "created_at": now,
+        },
+    ]
+
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO orders (
+            order_no, order_dt, source, customer, vendor, total,
+            vendor_price, approved_price, approval_status, approval_notes,
+            approved_by_shop_ts, approved_by_vendor_ts, commission_pct,
+            delivery_dt, delivery_type, status, created_at
+        )
+        VALUES (
+            :order_no, :order_dt, :source, :customer, :vendor, :total,
+            :vendor_price, :approved_price, :approval_status, :approval_notes,
+            :approved_by_shop_ts, :approved_by_vendor_ts, :commission_pct,
+            :delivery_dt, :delivery_type, :status, :created_at
+        )
+        """,
+        rows,
+    )
+    conn.commit()
+
+
+# init (in correct order)
+conn = get_conn()
+ensure_schema(conn)
+seed_demo_data(conn)
+
 # -----------------------------------------------------------------------
-#  HELPERS
+# Helpers
 # -----------------------------------------------------------------------
 def next_order_number(conn) -> str:
     """Return next ID like ORD-YYYYMM-0001; guaranteed unique."""
@@ -147,7 +241,7 @@ def auto_approval(vendor_price, approved_price):
 
 
 def import_orders_from_df(conn, df: pd.DataFrame, vendor_override: Optional[str] = None):
-    """Bulk import orders from a DataFrame."""
+    """Bulk import orders from DataFrame."""
     imported = 0
     skipped = 0
     now_iso = datetime.utcnow().isoformat(timespec="seconds")
@@ -185,14 +279,9 @@ def import_orders_from_df(conn, df: pd.DataFrame, vendor_override: Optional[str]
         except Exception:
             skipped += 1
     return imported, skipped
-    
-
-conn = get_conn()
-ensure_schema(conn)       # <-- add this line
-seed_demo_data(conn)
 
 # -----------------------------------------------------------------------
-#  UI CONFIG / STYLING
+# UI config / styling
 # -----------------------------------------------------------------------
 st.set_page_config(page_title="360 Flower Shop – Order Manager", page_icon="🌸", layout="wide")
 PINK = "#fed5d3"
@@ -211,14 +300,14 @@ footer {{visibility:hidden;}}
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------
-#  SIDEBAR NAVIGATION
+# Sidebar
 # -----------------------------------------------------------------------
 st.sidebar.header("TrueNorth Navigation")
 page = st.sidebar.radio("Go to", ["🧾 New Order Entry", "📦 Inventory",
                                   "💰 Reconciliation Dashboard", "⚙️ Settings"])
 
 # -----------------------------------------------------------------------
-#  PAGE: NEW ORDER ENTRY
+# Page: New Order Entry
 # -----------------------------------------------------------------------
 if page.startswith("🧾"):
     st.title("New Order Entry")
@@ -297,14 +386,14 @@ if page.startswith("🧾"):
     st.markdown('</div>', unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------
-#  PAGE: INVENTORY (placeholder)
+# Page: Inventory (placeholder)
 # -----------------------------------------------------------------------
 elif page.startswith("📦"):
     st.title("Inventory")
     st.markdown('<div class="tn-card">Inventory tracking coming soon.</div>', unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------
-#  PAGE: RECONCILIATION DASHBOARD
+# Page: Reconciliation Dashboard
 # -----------------------------------------------------------------------
 elif page.startswith("💰"):
     st.title("Reconciliation Dashboard")
@@ -333,9 +422,9 @@ elif page.startswith("💰"):
         st.download_button("⬇️ Export CSV", df.to_csv(index=False).encode("utf-8"),
                            file_name=f"orders_{datetime.now():%Y%m%d_%H%M%S}.csv")
 
-    # --- Import tools
+    # CSV import tools
     with st.expander("📥 Import orders from CSV"):
-        st.caption("Use the bundled sample (sample.csv) or upload your own with the same columns.")
+        st.caption("Use the bundled sample.csv or upload your own with the same columns.")
         cA, cB = st.columns([1, 2])
 
         with cA:
@@ -352,8 +441,7 @@ elif page.startswith("💰"):
 
         with cB:
             up = st.file_uploader("Upload CSV", type=["csv"], key="any_csv")
-            vendor_override = st.selectbox("(Optional) Force Vendor for all rows",
-                                           ["(none)", "BloomNet", "Teleflora"])
+            vendor_override = st.selectbox("(Optional) Force Vendor for all rows", ["(none)","BloomNet","Teleflora"])
             if up is not None:
                 try:
                     udf = pd.read_csv(up)
@@ -366,7 +454,7 @@ elif page.startswith("💰"):
                     st.error(f"Upload error: {e}")
 
 # -----------------------------------------------------------------------
-#  PAGE: SETTINGS
+# Page: Settings
 # -----------------------------------------------------------------------
 elif page.startswith("⚙️"):
     st.title("Settings")
