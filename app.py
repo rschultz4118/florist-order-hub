@@ -29,6 +29,63 @@ if not DB_PATH.exists() and OLD_DB_PATH.exists():
 
 
 def get_conn():
+    def ensure_schema(conn):
+    """Create table if needed and add any missing columns (safe to run every start)."""
+    # Create table if it doesn't exist
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_no TEXT UNIQUE,
+            order_dt TEXT,
+            source TEXT,
+            customer TEXT,
+            vendor TEXT,
+            total REAL,
+            vendor_price REAL,
+            approved_price REAL,
+            approval_status TEXT,
+            approval_notes TEXT,
+            approved_by_shop_ts TEXT,
+            approved_by_vendor_ts TEXT,
+            commission_pct REAL,
+            delivery_dt TEXT,
+            delivery_type TEXT,
+            status TEXT DEFAULT 'Open',
+            created_at TEXT
+        );
+    """)
+    conn.commit()
+
+    # Columns we expect: {name: "TYPE DEFAULT ..."} (SQLite ignores DEFAULT if omitted on ALTER)
+    required = {
+        "order_no": "TEXT",
+        "order_dt": "TEXT",
+        "source": "TEXT",
+        "customer": "TEXT",
+        "vendor": "TEXT",
+        "total": "REAL",
+        "vendor_price": "REAL",
+        "approved_price": "REAL",
+        "approval_status": "TEXT",
+        "approval_notes": "TEXT",
+        "approved_by_shop_ts": "TEXT",
+        "approved_by_vendor_ts": "TEXT",
+        "commission_pct": "REAL",
+        "delivery_dt": "TEXT",
+        "delivery_type": "TEXT",
+        "status": "TEXT",
+        "created_at": "TEXT",
+    }
+
+    # Current columns
+    cur_cols = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
+
+    # Add any missing columns
+    for col, coltype in required.items():
+        if col not in cur_cols:
+            conn.execute(f"ALTER TABLE orders ADD COLUMN {col} {coltype};")
+    conn.commit()
+
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS orders (
@@ -147,7 +204,9 @@ def seed_demo_data(conn):
 
 
 conn = get_conn()
+ensure_schema(conn)       # <-- add this line
 seed_demo_data(conn)
+
 
 # -----------------------------------------------------------------------
 #  HELPERS
