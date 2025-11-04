@@ -29,9 +29,8 @@ if not DB_PATH.exists() and OLD_DB_PATH.exists():
 
 
 def get_conn():
-    def ensure_schema(conn):
-    """Create table if needed and add any missing columns (safe to run every start)."""
-    # Create table if it doesn't exist
+    """Open a connection to the SQLite database and ensure the orders table exists."""
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,8 +54,12 @@ def get_conn():
         );
     """)
     conn.commit()
+    return conn
 
-    # Columns we expect: {name: "TYPE DEFAULT ..."} (SQLite ignores DEFAULT if omitted on ALTER)
+
+def ensure_schema(conn):
+    """Create table if needed and add any missing columns (safe to run every start)."""
+    # Columns we expect (SQLite ignores DEFAULT if omitted on ALTER)
     required = {
         "order_no": "TEXT",
         "order_dt": "TEXT",
@@ -86,121 +89,6 @@ def get_conn():
             conn.execute(f"ALTER TABLE orders ADD COLUMN {col} {coltype};")
     conn.commit()
 
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            order_no TEXT UNIQUE,
-            order_dt TEXT,
-            source TEXT,
-            customer TEXT,
-            vendor TEXT,
-            total REAL,
-            vendor_price REAL,
-            approved_price REAL,
-            approval_status TEXT,
-            approval_notes TEXT,
-            approved_by_shop_ts TEXT,
-            approved_by_vendor_ts TEXT,
-            commission_pct REAL,
-            delivery_dt TEXT,
-            delivery_type TEXT,
-            status TEXT DEFAULT 'Open',
-            created_at TEXT
-        );
-    """)
-    conn.commit()
-    return conn
-
-
-def seed_demo_data(conn):
-    """Seed sample orders if DB is empty."""
-    try:
-        n = conn.execute("SELECT COUNT(1) FROM orders").fetchone()[0]
-    except sqlite3.OperationalError:
-        n = 0
-    if n > 0:
-        return
-
-    now = datetime.utcnow().isoformat(timespec="seconds")
-    rows = [
-        {
-            "order_no": "ORD-202511-0001",
-            "order_dt": "2025-11-02",
-            "source": "Phone",
-            "customer": "Sarah James",
-            "vendor": None,
-            "total": 85.00,
-            "vendor_price": 0.0,
-            "approved_price": 0.0,
-            "approval_status": "Approved",
-            "approval_notes": "",
-            "approved_by_shop_ts": now,
-            "approved_by_vendor_ts": None,
-            "commission_pct": 0.0,
-            "delivery_dt": "2025-11-02",
-            "delivery_type": "In-Store Pickup",
-            "status": "Open",
-            "created_at": now,
-        },
-        {
-            "order_no": "ORD-202511-0002",
-            "order_dt": "2025-11-02",
-            "source": "BloomNet",
-            "customer": "BN#1234",
-            "vendor": "BloomNet",
-            "total": 92.50,
-            "vendor_price": 87.50,
-            "approved_price": 87.50,
-            "approval_status": "Approved",
-            "approval_notes": "Vendor confirmed",
-            "approved_by_shop_ts": now,
-            "approved_by_vendor_ts": now,
-            "commission_pct": 0.0,
-            "delivery_dt": "2025-11-03",
-            "delivery_type": "Vendor Delivery",
-            "status": "Vendor Pending",
-            "created_at": now,
-        },
-        {
-            "order_no": "ORD-202511-0003",
-            "order_dt": "2025-11-01",
-            "source": "Teleflora",
-            "customer": "TF#8890",
-            "vendor": "Teleflora",
-            "total": 110.00,
-            "vendor_price": 100.00,
-            "approved_price": 98.00,
-            "approval_status": "Pending",
-            "approval_notes": "Negotiation in progress",
-            "approved_by_shop_ts": None,
-            "approved_by_vendor_ts": now,
-            "commission_pct": 0.0,
-            "delivery_dt": "2025-11-02",
-            "delivery_type": "Vendor Delivery",
-            "status": "Vendor Pending",
-            "created_at": now,
-        },
-    ]
-
-    conn.executemany(
-        """
-        INSERT OR IGNORE INTO orders (
-            order_no, order_dt, source, customer, vendor, total,
-            vendor_price, approved_price, approval_status, approval_notes,
-            approved_by_shop_ts, approved_by_vendor_ts, commission_pct,
-            delivery_dt, delivery_type, status, created_at
-        )
-        VALUES (
-            :order_no, :order_dt, :source, :customer, :vendor, :total,
-            :vendor_price, :approved_price, :approval_status, :approval_notes,
-            :approved_by_shop_ts, :approved_by_vendor_ts, :commission_pct,
-            :delivery_dt, :delivery_type, :status, :created_at
-        )
-        """,
-        rows,
-    )
-    conn.commit()
 
 
 conn = get_conn()
