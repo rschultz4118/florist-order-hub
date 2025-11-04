@@ -1,6 +1,5 @@
 # =======================================================================
-# 360 Flower Shop – Order Manager
-# Complete Streamlit App (ready for Streamlit Cloud)
+# 360 Flower Shop – Order Manager (Full App)
 # =======================================================================
 
 import os
@@ -8,6 +7,8 @@ import shutil
 import sqlite3
 from pathlib import Path
 from datetime import datetime, date
+from typing import Optional
+
 import pandas as pd
 import streamlit as st
 
@@ -127,9 +128,63 @@ def auto_approval(vendor_price, approved_price):
         ap = float(approved_price)
     except Exception:
         return "Pending"
-    if abs(vp - ap) < 0.01:
-        return "Approved"
-    return "Pending"
+    return "Approved" if abs(vp - ap) < 0.01 else "Pending"
+
+
+# --- CSV import helper -------------------------------------------------
+def import_orders_from_df(conn, df: pd.DataFrame, vendor_override: Optional[str] = None):
+    """
+    Imports rows into the `orders` table.
+    Expects columns (case-sensitive) like sample.csv:
+      order_no,order_dt,source,customer,vendor,total,
+      vendor_price,approved_price,approval_status,approval_notes,
+      delivery_dt,delivery_type,status
+    Any missing columns default sensibly.
+    """
+    imported = 0
+    skipped = 0
+    now_iso = datetime.utcnow().isoformat(timespec="seconds")
+
+    need_cols = ["order_no","order_dt","source","customer","vendor","total",
+                 "vendor_price","approved_price","approval_status","approval_notes",
+                 "delivery_dt","delivery_type","status"]
+    for c in need_cols:
+        if c not in df.columns:
+            df[c] = None
+
+    for _, r in df.iterrows():
+        try:
+            rec = {
+                "order_no": str(r.get("order_no") or "").strip() or None,
+                "order_dt": str(r.get("order_dt") or date.today().isoformat()),
+                "source": str(r.get("source") or vendor_override or "-"),
+                "customer": str(r.get("customer") or "Vendor Import"),
+                "vendor": str(vendor_override or r.get("vendor") or None) or None,
+                "total": float(r.get("total") or 0.0),
+                "vendor_price": float(r.get("vendor_price") or 0.0),
+                "approved_price": float(r.get("approved_price") or 0.0),
+                "approval_status": str(r.get("approval_status") or "Pending"),
+                "approval_notes": str(r.get("approval_notes") or ""),
+                "approved_by_shop_ts": now_iso if str(r.get("approval_status")).strip() == "Approved" else None,
+                "approved_by_vendor_ts": now_iso if str(r.get("approval_status")).strip() == "Approved" else None,
+                "commission_pct": 0.0,
+                "delivery_dt": str(r.get("delivery_dt") or date.today().isoformat()),
+                "delivery_type": str(r.get("delivery_type") or "Vendor Delivery"),
+                "status": str(r.get("status") or "Vendor Pending"),
+                "created_at": now_iso
+            }
+            if not rec["order_no"]:
+                rec["order_no"] = next_order_number(conn)
+
+            insert_order(conn, rec)
+            imported += 1
+        except sqlite3.IntegrityError:
+            skipped += 1
+        except Exception:
+            skipped += 1
+
+    return imported, skipped
+
 
 # -----------------------------------------------------------------------
 #  UI SETUP / STYLING
@@ -334,6 +389,39 @@ elif page == "💰 Reconciliation Dashboard":
                            file_name=f"orders_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
     else:
         st.info("No matching orders found.")
+
+    # --- Quick demo import tools --------------------------------------
+    with st.expander("📥 Import orders from CSV"):
+        st.caption("Use the bundled sample (sample.csv) or upload your own with matching columns.")
+        colA, colB = st.columns([1, 2])
+
+        # A) One-click: load bundled sample.csv from repo
+        with colA:
+            if st.button("Load bundled sample.csv"):
+                try:
+                    sample_path = Path(__file__).parent / "sample.csv"
+                    sdf = pd.read_csv(sample_path)
+                    imp, skip = import_orders_from_df(conn, sdf)
+                    st.success(f"Imported {imp} rows • Skipped {skip}")
+                except FileNotFoundError:
+                    st.error("sample.csv not found in the app folder.")
+                except Exception as e:
+                    st.error(f"Import error: {e}")
+
+        # B) Upload any CSV with the sample columns
+        with colB:
+            up = st.file_uploader("Upload CSV", type=["csv"], key="any_csv")
+            vendor_override = st.selectbox("(Optional) Force Vendor for all rows", ["(none)", "BloomNet", "Teleflora"])
+            if up is not None:
+                try:
+                    udf = pd.read_csv(up)
+                    st.dataframe(udf.head(10), use_container_width=True)
+                    if st.button("Import uploaded CSV"):
+                        vo = None if vendor_override == "(none)" else vendor_override
+                        imp, skip = import_orders_from_df(conn, udf, vendor_override=vo)
+                        st.success(f"Imported {imp} rows • Skipped {skip}")
+                except Exception as e:
+                    st.error(f"Upload error: {e}")
 
 # -----------------------------------------------------------------------
 #  PAGE: SETTINGS
