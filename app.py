@@ -1,5 +1,5 @@
 # =======================================================================
-# 360 Flower Shop – Order Manager (Full App)
+# 360 Flower Shop – Order Manager (Stable Full App)
 # =======================================================================
 
 import os
@@ -13,7 +13,7 @@ import pandas as pd
 import streamlit as st
 
 # -----------------------------------------------------------------------
-#  DB SETUP (works locally and on Streamlit Cloud)
+#  DATABASE SETUP (works locally & on Streamlit Cloud)
 # -----------------------------------------------------------------------
 IS_CLOUD = os.environ.get("STREAMLIT_RUNTIME", "") != ""
 DATA_DIR = Path("/mount/data") if IS_CLOUD else Path(__file__).parent
@@ -57,38 +57,13 @@ def get_conn():
 
 
 def seed_demo_data(conn):
-    """Seed a few demo rows only if the table is empty."""
+    """Seed sample orders if DB is empty."""
     try:
         n = conn.execute("SELECT COUNT(1) FROM orders").fetchone()[0]
     except sqlite3.OperationalError:
-        # If table somehow doesn't exist yet, create it again and continue
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS orders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                order_no TEXT UNIQUE,
-                order_dt TEXT,
-                source TEXT,
-                customer TEXT,
-                vendor TEXT,
-                total REAL,
-                vendor_price REAL,
-                approved_price REAL,
-                approval_status TEXT,
-                approval_notes TEXT,
-                approved_by_shop_ts TEXT,
-                approved_by_vendor_ts TEXT,
-                commission_pct REAL,
-                delivery_dt TEXT,
-                delivery_type TEXT,
-                status TEXT DEFAULT 'Open',
-                created_at TEXT
-            );
-        """)
-        conn.commit()
         n = 0
-
     if n > 0:
-        return  # already seeded
+        return
 
     now = datetime.utcnow().isoformat(timespec="seconds")
     rows = [
@@ -171,20 +146,33 @@ def seed_demo_data(conn):
     conn.commit()
 
 
+conn = get_conn()
+seed_demo_data(conn)
+
 # -----------------------------------------------------------------------
-#  BASIC FUNCTIONS
+#  HELPERS
 # -----------------------------------------------------------------------
 def next_order_number(conn) -> str:
+    """Return next ID like ORD-YYYYMM-0001; guaranteed unique."""
     yyyymm = datetime.now().strftime("%Y%m")
     prefix = f"ORD-{yyyymm}-"
     row = conn.execute(
-        "SELECT order_no FROM orders WHERE order_no LIKE ? ORDER BY order_no DESC LIMIT 1",
-        (prefix + "%",),
+        "SELECT order_no FROM orders WHERE order_no LIKE ? "
+        "ORDER BY order_no DESC LIMIT 1",
+        (prefix + "%",)
     ).fetchone()
-    if row:
-        last = int(row[0].split("-")[-1])
-        return f"{prefix}{last+1:04d}"
-    return f"{prefix}0001"
+    last = 0
+    if row and row[0]:
+        try:
+            last = int(row[0].split("-")[-1])
+        except Exception:
+            last = 0
+    while True:
+        last += 1
+        candidate = f"{prefix}{last:04d}"
+        exists = conn.execute("SELECT 1 FROM orders WHERE order_no=? LIMIT 1", (candidate,)).fetchone()
+        if not exists:
+            return candidate
 
 
 def insert_order(conn, record: dict):
@@ -219,31 +207,21 @@ def auto_approval(vendor_price, approved_price):
     return "Approved" if abs(vp - ap) < 0.01 else "Pending"
 
 
-# --- CSV import helper -------------------------------------------------
 def import_orders_from_df(conn, df: pd.DataFrame, vendor_override: Optional[str] = None):
-    """
-    Imports rows into the `orders` table.
-    Expects columns (case-sensitive) like sample.csv:
-      order_no,order_dt,source,customer,vendor,total,
-      vendor_price,approved_price,approval_status,approval_notes,
-      delivery_dt,delivery_type,status
-    Any missing columns default sensibly.
-    """
+    """Bulk import orders from a DataFrame."""
     imported = 0
     skipped = 0
     now_iso = datetime.utcnow().isoformat(timespec="seconds")
-
     need_cols = ["order_no","order_dt","source","customer","vendor","total",
                  "vendor_price","approved_price","approval_status","approval_notes",
                  "delivery_dt","delivery_type","status"]
     for c in need_cols:
         if c not in df.columns:
             df[c] = None
-
     for _, r in df.iterrows():
         try:
             rec = {
-                "order_no": str(r.get("order_no") or "").strip() or None,
+                "order_no": str(r.get("order_no") or "").strip() or next_order_number(conn),
                 "order_dt": str(r.get("order_dt") or date.today().isoformat()),
                 "source": str(r.get("source") or vendor_override or "-"),
                 "customer": str(r.get("customer") or "Vendor Import"),
@@ -261,230 +239,162 @@ def import_orders_from_df(conn, df: pd.DataFrame, vendor_override: Optional[str]
                 "status": str(r.get("status") or "Vendor Pending"),
                 "created_at": now_iso
             }
-            if not rec["order_no"]:
-                rec["order_no"] = next_order_number(conn)
-
             insert_order(conn, rec)
             imported += 1
         except sqlite3.IntegrityError:
             skipped += 1
         except Exception:
             skipped += 1
-
     return imported, skipped
 
-
 # -----------------------------------------------------------------------
-#  UI SETUP / STYLING
+#  UI CONFIG / STYLING
 # -----------------------------------------------------------------------
-st.set_page_config(page_title="360 Flower Shop - Order Manager", page_icon="🌸", layout="wide")
-
+st.set_page_config(page_title="360 Flower Shop – Order Manager", page_icon="🌸", layout="wide")
 PINK = "#fed5d3"
-CUSTOM_CSS = f"""
+st.markdown(f"""
 <style>
-.stApp {{ background-color: {PINK}; }}
-.tn-card {{
-    background: #ffffff; border-radius: 14px; padding: 18px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.07); border: 1px solid rgba(0,0,0,0.06);
-}}
-.tn-badge {{
-    border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 600; display:inline-block;
-}}
-.tn-approve {{ background:#e6fff3; color:#05603a; border:1px solid #a4e5c2; }}
-.tn-pending {{ background:#fff9e6; color:#7a4d00; border:1px solid #ffe08a; }}
-.tn-dispute {{ background:#ffe9ea; color:#8b1c21; border:1px solid #ffb3b6; }}
-.tn-total {{ font-size: 22px; font-weight: 700; }}
+.stApp {{background-color:{PINK};}}
+.tn-card {{background:#fff;border-radius:14px;padding:18px;
+box-shadow:0 2px 8px rgba(0,0,0,0.07);border:1px solid rgba(0,0,0,0.06);}}
+.tn-badge {{border-radius:999px;padding:2px 10px;font-size:12px;font-weight:600;display:inline-block;}}
+.tn-approve{{background:#e6fff3;color:#05603a;border:1px solid #a4e5c2;}}
+.tn-pending{{background:#fff9e6;color:#7a4d00;border:1px solid #ffe08a;}}
+.tn-dispute{{background:#ffe9ea;color:#8b1c21;border:1px solid #ffb3b6;}}
+.tn-total{{font-size:22px;font-weight:700;}}
+footer {{visibility:hidden;}}
 </style>
-"""
-st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------
 #  SIDEBAR NAVIGATION
 # -----------------------------------------------------------------------
 st.sidebar.header("TrueNorth Navigation")
-page = st.sidebar.radio(
-    "Go to",
-    ["🧾 New Order Entry", "📦 Inventory", "💰 Reconciliation Dashboard", "⚙️ Settings"]
-)
-
-# -----------------------------------------------------------------------
-#  SESSION STATE (for quick order cart)
-# -----------------------------------------------------------------------
-if "cart" not in st.session_state:
-    st.session_state.cart = []
-
-
-def add_item(name, price):
-    st.session_state.cart.append({"item": name, "price": round(float(price), 2)})
-
-
-def remove_item(i):
-    try:
-        st.session_state.cart.pop(i)
-    except Exception:
-        pass
-
-
-def cart_total():
-    return round(sum(i["price"] for i in st.session_state.cart), 2)
-
+page = st.sidebar.radio("Go to", ["🧾 New Order Entry", "📦 Inventory",
+                                  "💰 Reconciliation Dashboard", "⚙️ Settings"])
 
 # -----------------------------------------------------------------------
 #  PAGE: NEW ORDER ENTRY
 # -----------------------------------------------------------------------
-if page == "🧾 New Order Entry":
+if page.startswith("🧾"):
     st.title("New Order Entry")
     st.markdown('<div class="tn-card">', unsafe_allow_html=True)
 
     c0, c1, c2 = st.columns([1.2, 1, 1])
     with c0:
         order_dt = st.date_input("Order Date", value=date.today())
-        source = st.selectbox("Order Source", ["In-Store", "Phone", "BloomNet", "Teleflora", "Event"])
+        source = st.selectbox("Order Source", ["In-Store","Phone","BloomNet","Teleflora","Event"])
         customer = st.text_input("Customer Name / External Order ID", placeholder="e.g., Sarah James or BN#1234")
     with c1:
-        vendor = st.selectbox("Vendor", ["-", "BloomNet", "Teleflora"])
+        vendor = st.selectbox("Vendor", ["-","BloomNet","Teleflora"])
         delivery_dt = st.date_input("Delivery Date", value=date.today())
-        delivery_type = st.selectbox("Delivery Type", ["In-Store Pickup", "Local Delivery", "Event"])
+        delivery_type = st.selectbox("Delivery Type", ["In-Store Pickup","Local Delivery","Event"])
     with c2:
-        status = st.selectbox("Fulfillment Status", ["Open", "Vendor Pending", "Vendor Paid", "Cancelled"])
+        status = st.selectbox("Fulfillment Status", ["Open","Vendor Pending","Vendor Paid","Cancelled"])
         auto_no = st.checkbox("Auto-generate order number", value=True)
-        if auto_no:
-            order_no = next_order_number(conn)
-            st.text_input("Order No", value=order_no, disabled=True)
-        else:
-            order_no = st.text_input("Order No (unique)").strip()
+        order_no = next_order_number(conn) if auto_no else st.text_input("Order No (unique)").strip()
+        st.text_input("Generated Order No", value=order_no, disabled=True)
 
     st.markdown("---")
 
     # Quick buttons
     st.subheader("Items (Quick Add)")
     q1, q2, q3, q4 = st.columns(4)
-    with q1:
-        if st.button("🌹 Dozen Roses ($85)"): add_item("Dozen Roses", 85)
-    with q2:
-        if st.button("💐 Wrapped Bouquet ($45)"): add_item("Wrapped Bouquet", 45)
-    with q3:
-        if st.button("🏺 Standard Vase Arrangement ($65)"): add_item("Standard Vase Arrangement", 65)
-    with q4:
-        if st.button("🎈 Add-on: Balloon ($6)"): add_item("Balloon Add-on", 6)
+    if q1.button("🌹 Dozen Roses ($85)"): st.session_state.setdefault("cart", []).append({"item":"Dozen Roses","price":85})
+    if q2.button("💐 Wrapped Bouquet ($45)"): st.session_state.cart.append({"item":"Wrapped Bouquet","price":45})
+    if q3.button("🏺 Standard Vase ($65)"): st.session_state.cart.append({"item":"Standard Vase","price":65})
+    if q4.button("🎈 Add-on Balloon ($6)"): st.session_state.cart.append({"item":"Balloon Add-on","price":6})
 
-    cc1, cc2, cc3 = st.columns([2, 1, 0.6])
-    with cc1:
-        desc = st.text_input("Custom request", placeholder="e.g., Sympathy arrangement with lilies")
-    with cc2:
-        price = st.number_input("Price ($)", min_value=0.0, step=0.50, value=0.00)
-    with cc3:
-        if st.button("➕ Add custom line"):
-            if desc and price > 0:
-                add_item(desc, price)
-            else:
-                st.warning("Add a description and price > 0.")
+    desc = st.text_input("Custom Request", placeholder="e.g., Sympathy arrangement with lilies")
+    price = st.number_input("Price ($)", min_value=0.0, step=0.5)
+    if st.button("➕ Add Custom Line") and desc and price:
+        st.session_state.cart.append({"item":desc,"price":float(price)})
 
-    if st.session_state.cart:
-        st.markdown("#### Order Items")
-        for i, item in enumerate(st.session_state.cart):
-            c = st.columns([6, 2, 1])
-            c[0].markdown(f"- {item['item']}")
-            c[1].markdown(f"${item['price']:.2f}")
-            if c[2].button("🗑️", key=f"rm{i}"):
-                remove_item(i)
-                st.experimental_rerun()
+    total = round(sum(i["price"] for i in st.session_state.get("cart", [])), 2)
+    st.markdown(f"**Calculated Total:** <span class='tn-total'>${total:.2f}</span>", unsafe_allow_html=True)
+    total_override = st.number_input("Override Total ($)", min_value=0.0, step=0.01, value=float(total))
 
-    calc_total = cart_total()
     st.markdown("---")
-    st.markdown(f"**Calculated Total:** <span class='tn-total'>${calc_total:.2f}</span>", unsafe_allow_html=True)
-    total_override = st.number_input("Override Total ($)", min_value=float(0.0), step=float(0.01), value=float(calc_total))
-
-    st.markdown("#### Price Approval (for BloomNet/Teleflora)")
-    a, b, c = st.columns(3)
-    with a:
-        vendor_price = st.number_input("Vendor Quoted Price ($)", min_value=0.0, step=0.01, value=0.00)
-    with b:
-        approved_price = st.number_input("Shop-Approved Price ($)", min_value=0.0, step=0.01, value=0.00)
-    with c:
-        default_approval = auto_approval(vendor_price, approved_price)
-        approval_status = st.selectbox("Approval Status", ["Pending", "Approved", "Disputed"],
-                                       index=["Pending", "Approved", "Disputed"].index(default_approval))
+    st.subheader("Price Approval (for BloomNet/Teleflora)")
+    a,b,c = st.columns(3)
+    vendor_price = a.number_input("Vendor Quoted Price ($)", min_value=0.0, step=0.01)
+    approved_price = b.number_input("Shop-Approved Price ($)", min_value=0.0, step=0.01)
+    approval_status = c.selectbox("Approval Status", ["Pending","Approved","Disputed"],
+                                  index=["Pending","Approved","Disputed"].index(auto_approval(vendor_price, approved_price)))
     approval_notes = st.text_area("Approval Notes")
 
     if st.button("💾 Save Order"):
         now = datetime.utcnow().isoformat(timespec="seconds")
+        record = dict(
+            order_no=order_no,
+            order_dt=order_dt.isoformat(),
+            source=source,
+            customer=customer,
+            vendor=None if vendor=="-" else vendor,
+            total=float(total_override),
+            vendor_price=float(vendor_price),
+            approved_price=float(approved_price),
+            approval_status=approval_status,
+            approval_notes=approval_notes,
+            approved_by_shop_ts=now if approval_status!="Pending" else None,
+            approved_by_vendor_ts=None,
+            commission_pct=0.0,
+            delivery_dt=delivery_dt.isoformat(),
+            delivery_type=delivery_type,
+            status=status,
+            created_at=now
+        )
         try:
-            insert_order(conn, {
-                "order_no": order_no,
-                "order_dt": order_dt.isoformat(),
-                "source": source,
-                "customer": customer,
-                "vendor": vendor if vendor != "-" else None,
-                "total": float(total_override),
-                "vendor_price": float(vendor_price),
-                "approved_price": float(approved_price),
-                "approval_status": approval_status,
-                "approval_notes": approval_notes,
-                "approved_by_shop_ts": now if approval_status in ("Approved", "Disputed") else None,
-                "approved_by_vendor_ts": None,
-                "commission_pct": 0.0,
-                "delivery_dt": delivery_dt.isoformat(),
-                "delivery_type": delivery_type,
-                "status": status,
-                "created_at": now
-            })
-            st.session_state.cart = []
-            st.success(f"Order {order_no} saved.")
+            insert_order(conn, record)
+            st.session_state["cart"] = []
+            st.success(f"✅ Order {order_no} saved.")
         except sqlite3.IntegrityError:
-            st.error("That order number already exists. Try again.")
-
+            st.error("❌ Duplicate order number.")
     st.markdown('</div>', unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------
 #  PAGE: INVENTORY (placeholder)
 # -----------------------------------------------------------------------
-elif page == "📦 Inventory":
+elif page.startswith("📦"):
     st.title("Inventory")
-    st.markdown('<div class="tn-card">', unsafe_allow_html=True)
-    st.info("Inventory tracking coming soon.")
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('<div class="tn-card">Inventory tracking coming soon.</div>', unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------
 #  PAGE: RECONCILIATION DASHBOARD
 # -----------------------------------------------------------------------
-elif page == "💰 Reconciliation Dashboard":
+elif page.startswith("💰"):
     st.title("Reconciliation Dashboard")
-
     st.markdown('<div class="tn-card">', unsafe_allow_html=True)
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    with c1: f_source = st.selectbox("Source", ["All", "In-Store", "Phone", "BloomNet", "Teleflora", "Event"])
-    with c2: f_vendor = st.selectbox("Vendor", ["All", "-", "BloomNet", "Teleflora"])
-    with c3: f_status = st.selectbox("Fulfillment", ["All", "Open", "Vendor Pending", "Vendor Paid", "Cancelled"])
-    with c4: f_approval = st.selectbox("Approval", ["All", "Pending", "Approved", "Disputed"])
-    with c5: start = st.date_input("Start", value=None)
-    with c6: end = st.date_input("End", value=None)
+    f1,f2,f3,f4,f5,f6 = st.columns(6)
+    f_source = f1.selectbox("Source",["All","In-Store","Phone","BloomNet","Teleflora","Event"])
+    f_vendor = f2.selectbox("Vendor",["All","-","BloomNet","Teleflora"])
+    f_status = f3.selectbox("Fulfillment",["All","Open","Vendor Pending","Vendor Paid","Cancelled"])
+    f_approval = f4.selectbox("Approval",["All","Pending","Approved","Disputed"])
+    start = f5.date_input("Start")
+    end = f6.date_input("End")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    df = fetch_orders(conn, f_source, None if f_vendor == "-" else f_vendor, f_status, f_approval, start, end)
-
-    if not df.empty:
+    df = fetch_orders(conn, f_source, None if f_vendor=="-" else f_vendor, f_status, f_approval, start, end)
+    if df.empty:
+        st.info("No matching orders found.")
+    else:
         def badge(s):
-            if s == "Approved": return f'<span class="tn-badge tn-approve">{s}</span>'
-            if s == "Disputed": return f'<span class="tn-badge tn-dispute">{s}</span>'
-            return f'<span class="tn-badge tn-pending">{s}</span>'
+            cls = {"Approved":"tn-approve","Disputed":"tn-dispute"}.get(s,"tn-pending")
+            return f"<span class='tn-badge {cls}'>{s}</span>"
         df_display = df.copy()
         df_display["approval_status"] = df_display["approval_status"].apply(badge)
         st.markdown('<div class="tn-card">', unsafe_allow_html=True)
         st.write(df_display.to_html(escape=False, index=False), unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
-        st.download_button("⬇️ Export to CSV", df.to_csv(index=False).encode("utf-8"),
-                           file_name=f"orders_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
-    else:
-        st.info("No matching orders found.")
+        st.download_button("⬇️ Export CSV", df.to_csv(index=False).encode("utf-8"),
+                           file_name=f"orders_{datetime.now():%Y%m%d_%H%M%S}.csv")
 
-    # --- Quick demo import tools --------------------------------------
+    # --- Import tools
     with st.expander("📥 Import orders from CSV"):
-        st.caption("Use the bundled sample (sample.csv) or upload your own with matching columns.")
-        colA, colB = st.columns([1, 2])
+        st.caption("Use the bundled sample (sample.csv) or upload your own with the same columns.")
+        cA, cB = st.columns([1, 2])
 
-        # A) One-click: load bundled sample.csv from repo
-        with colA:
+        with cA:
             if st.button("Load bundled sample.csv"):
                 try:
                     sample_path = Path(__file__).parent / "sample.csv"
@@ -496,10 +406,10 @@ elif page == "💰 Reconciliation Dashboard":
                 except Exception as e:
                     st.error(f"Import error: {e}")
 
-        # B) Upload any CSV with the sample columns
-        with colB:
+        with cB:
             up = st.file_uploader("Upload CSV", type=["csv"], key="any_csv")
-            vendor_override = st.selectbox("(Optional) Force Vendor for all rows", ["(none)", "BloomNet", "Teleflora"])
+            vendor_override = st.selectbox("(Optional) Force Vendor for all rows",
+                                           ["(none)", "BloomNet", "Teleflora"])
             if up is not None:
                 try:
                     udf = pd.read_csv(up)
@@ -514,7 +424,7 @@ elif page == "💰 Reconciliation Dashboard":
 # -----------------------------------------------------------------------
 #  PAGE: SETTINGS
 # -----------------------------------------------------------------------
-elif page == "⚙️ Settings":
+elif page.startswith("⚙️"):
     st.title("Settings")
     st.markdown('<div class="tn-card">', unsafe_allow_html=True)
     st.text_input("Business Name", "360 Flower Shop")
